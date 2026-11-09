@@ -45,9 +45,7 @@
       // Request permission directly inside the keyboard gesture, before network I/O.
       if(await directory.requestPermission({mode:'readwrite'})!=='granted')throw Error('需要文件夹写入授权');
       say('正在保存…');
-      let url=new URL(img.currentSrc||img.src,location.href);
-      // Huaban CDN thumbnail transformations follow an underscore after the asset key.
-      if(/(^|\.)huabanimg\.com$/.test(url.hostname))url.pathname=url.pathname.replace(/_[^/]*$/,'');
+      const url=new URL(img.currentSrc||img.src,location.href);
       const result=await chrome.runtime.sendMessage({type:'image',url:url.href});
       if(result.error)throw Error(result.error);
       const ext=({'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/avif':'avif'})[result.mime]||'img';

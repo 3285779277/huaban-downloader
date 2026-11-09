@@ -1,7 +1,8 @@
+importScripts('image-url.js');
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type !== 'image') return;
   (async () => {
-    const u = new URL(msg.url);
+    const u = new URL(originalImageUrl(msg.url));
     if (u.protocol !== 'https:' || !/(^|\.)(huabanimg\.com|huaban\.com)$/.test(u.hostname)) throw Error('仅支持花瓣图片域名');
     const response = await fetch(u.href, {credentials:'omit'});
     if (!response.ok) throw Error('图片请求失败：' + response.status);
