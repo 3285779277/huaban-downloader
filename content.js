@@ -6,6 +6,10 @@
   const status=document.createElement('span'); status.textContent='  悬停或查看大图，按 Z 下载';
   panel.append(button,status); document.documentElement.append(panel);
   const say=t=>status.textContent='  '+t;
+  const refreshHint='扩展已更新或重新加载，请刷新此花瓣页面后再按 Z';
+  function runtimeAvailable(){
+    try{return !!globalThis.chrome?.runtime?.id && typeof globalThis.chrome.runtime.sendMessage==='function';}catch{return false;}
+  }
   const db=new Promise((resolve,reject)=>{
     const req=indexedDB.open('huaban-independent-downloader',1);
     req.onupgradeneeded=()=>req.result.createObjectStore('settings');
@@ -39,6 +43,7 @@
     if(e.composedPath().some(n=>n instanceof HTMLElement&&(n.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName))))return;
     const img=candidate(); if(!img||busy)return;
     e.preventDefault();
+    if(!runtimeAvailable()){say(refreshHint);return;}
     if(!directory){say('请先点击“选择素材文件夹”');return;}
     busy=true;
     try {
@@ -46,7 +51,9 @@
       if(await directory.requestPermission({mode:'readwrite'})!=='granted')throw Error('需要文件夹写入授权');
       say('正在保存…');
       const url=new URL(img.currentSrc||img.src,location.href);
+      if(!runtimeAvailable())throw Error(refreshHint);
       const result=await chrome.runtime.sendMessage({type:'image',url:url.href});
+      if(!result)throw Error('后台没有返回结果，请重新加载扩展并刷新此页面');
       if(result.error)throw Error(result.error);
       const ext=({'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/avif':'avif'})[result.mime]||'img';
       const name='花瓣_'+Date.now()+'_'+crypto.randomUUID().slice(0,8)+'.'+ext;
@@ -54,6 +61,6 @@
       const stream=await file.createWritable();
       try{await stream.write(Uint8Array.from(atob(result.data),c=>c.charCodeAt(0)));await stream.close();}catch(e){await stream.abort().catch(()=>{});throw e;}
       say('已保存：'+name);
-    }catch(e){say('保存失败：'+e.message);}finally{busy=false;}
+    }catch(e){say(!runtimeAvailable()||/Extension context invalidated/i.test(e.message)?refreshHint:'保存失败：'+e.message);}finally{busy=false;}
   },true);
 })();
