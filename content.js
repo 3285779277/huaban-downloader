@@ -38,10 +38,82 @@
     if(/\/pins\/[^/]+/.test(location.pathname))return largest(images);
     return hovered&&visible(hovered)?hovered:null;
   }
+  const selectionBox=document.createElement('div');
+  // Keep the page-space selection below the site's fixed navigation layers.
+  selectionBox.style.cssText='position:absolute;pointer-events:none;z-index:1;border:1px solid #369cff;background:rgba(70,160,255,.18);box-sizing:border-box;display:none';
+  document.documentElement.append(selectionBox);
+  const selectionStyle=document.createElement('style');
+  selectionStyle.textContent='.huaban-download-selected{outline:3px solid #369cff!important;outline-offset:-3px!important}';
+  document.documentElement.append(selectionStyle);
+  let selection=null, dragging=false, pointer=null, suppressClick=false;
+  let selected=[];
+  function singleImageView(){
+    if(/\/pins\/[^/]+/.test(location.pathname))return true;
+    return [...document.querySelectorAll('[role="dialog"],dialog[open]')].some(dialog=>
+      [...dialog.querySelectorAll('img')].some(visible));
+  }
+  function resetForSingleImage(){
+    if(!singleImageView())return false;
+    pointer=null;dragging=false;
+    if(selection){clearSelection();if(!busy)say('单图浏览，按 Z 下载当前大图');}
+    return true;
+  }
+  // Huaban changes views without reloading the content script.
+  new MutationObserver(()=>{if(selection||pointer)resetForSingleImage();})
+    .observe(document.documentElement,{childList:true,subtree:true});
+  window.addEventListener('popstate',resetForSingleImage);
+  const editable=n=>n instanceof HTMLElement&&(n.isContentEditable||/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(n.tagName));
+  function clearSelection(){
+    selected.forEach(img=>img.classList.remove('huaban-download-selected'));
+    selected=[]; selection=null; selectionBox.style.display='none';
+  }
+  function updateSelection(){
+    if(resetForSingleImage())return;
+    if(!selection)return;
+    const left=Math.min(selection.x1,selection.x2), top=Math.min(selection.y1,selection.y2);
+    const right=Math.max(selection.x1,selection.x2), bottom=Math.max(selection.y1,selection.y2);
+    Object.assign(selectionBox.style,{display:'block',left:left+'px',top:top+'px',width:(right-left)+'px',height:(bottom-top)+'px'});
+    selected.forEach(img=>img.classList.remove('huaban-download-selected'));
+    selected=[...document.images].filter(img=>{
+      const r=img.getBoundingClientRect(), style=getComputedStyle(img);
+      return r.width>100&&r.height>100&&style.visibility!=='hidden'&&style.display!=='none'&&
+        /(^|\.)(huabanimg\.com|huaban\.com)$/.test((()=>{try{return new URL(img.currentSrc||img.src).hostname;}catch{return '';}})())&&
+        r.right+scrollX>left&&r.left+scrollX<right&&r.bottom+scrollY>top&&r.top+scrollY<bottom;
+    });
+    selected.forEach(img=>img.classList.add('huaban-download-selected'));
+    if(!busy)say('已框选 '+selected.length+' 张，按 Z 下载，Esc 清除');
+  }
+  document.addEventListener('pointerdown',e=>{
+    if(resetForSingleImage())return;
+    if(e.button!==0||e.pointerType!=='mouse'||busy||panel.contains(e.target)||e.composedPath().some(editable))return;
+    pointer={x:e.clientX,y:e.clientY,startX:e.pageX,startY:e.pageY}; dragging=false;
+  },true);
+  document.addEventListener('pointermove',e=>{
+    if(!pointer)return;
+    if(resetForSingleImage())return;
+    pointer.x=e.clientX;pointer.y=e.clientY;
+    if(!dragging&&Math.hypot(e.pageX-pointer.startX,e.pageY-pointer.startY)<6)return;
+    if(!dragging){clearSelection();dragging=true;selection={x1:pointer.startX,y1:pointer.startY};}
+    selection.x2=e.pageX;selection.y2=e.pageY;
+    e.preventDefault();window.getSelection()?.removeAllRanges();updateSelection();
+  },true);
+  document.addEventListener('dragstart',e=>{if(pointer)e.preventDefault();},true);
+  document.addEventListener('selectstart',e=>{if(pointer)e.preventDefault();},true);
+  function finishSelection(){if(dragging){suppressClick=true;setTimeout(()=>{suppressClick=false;},0);}pointer=null;dragging=false;}
+  document.addEventListener('pointerup',finishSelection,true);
+  document.addEventListener('pointercancel',finishSelection,true);
+  window.addEventListener('blur',finishSelection);
+  document.addEventListener('click',e=>{if(suppressClick){e.preventDefault();e.stopImmediatePropagation();}},true);
+  window.addEventListener('scroll',()=>{
+    if(dragging&&pointer){selection.x2=pointer.x+scrollX;selection.y2=pointer.y+scrollY;updateSelection();}
+  },{passive:true});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){finishSelection();clearSelection();say('已清除框选，悬停图片按 Z 下载');}},true);
   document.addEventListener('keydown',async e=>{
     if(e.code!=='KeyZ'||e.repeat||e.ctrlKey||e.altKey||e.metaKey||e.shiftKey||e.isComposing)return;
     if(e.composedPath().some(n=>n instanceof HTMLElement&&(n.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName))))return;
-    const img=candidate(); if(!img||busy)return;
+    resetForSingleImage();
+    const images=selection?selected.slice():[candidate()].filter(Boolean); if(!images.length||busy)return;
+    const urls=[...new Set(images.map(img=>new URL(img.currentSrc||img.src,location.href).href))];
     e.preventDefault();
     if(!runtimeAvailable()){say(refreshHint);return;}
     if(!directory){say('请先点击“选择素材文件夹”');return;}
@@ -49,10 +121,12 @@
     try {
       // Request permission directly inside the keyboard gesture, before network I/O.
       if(await directory.requestPermission({mode:'readwrite'})!=='granted')throw Error('需要文件夹写入授权');
-      say('正在保存…');
-      const url=new URL(img.currentSrc||img.src,location.href);
+      let saved=0, failed=0, lastError='';
+      for(const url of urls){
+      say('正在保存 '+(saved+failed+1)+' / '+urls.length+'…');
+      try {
       if(!runtimeAvailable())throw Error(refreshHint);
-      const result=await chrome.runtime.sendMessage({type:'image',url:url.href});
+      const result=await chrome.runtime.sendMessage({type:'image',url});
       if(!result)throw Error('后台没有返回结果，请重新加载扩展并刷新此页面');
       if(result.error)throw Error(result.error);
       const ext=({'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/avif':'avif'})[result.mime]||'img';
@@ -60,7 +134,10 @@
       const file=await directory.getFileHandle(name,{create:true});
       const stream=await file.createWritable();
       try{await stream.write(Uint8Array.from(atob(result.data),c=>c.charCodeAt(0)));await stream.close();}catch(e){await stream.abort().catch(()=>{});throw e;}
-      say('已保存：'+name);
+      saved++;
+      }catch(error){failed++;lastError=error.message;}
+      }
+      say('已保存 '+saved+' 张'+(failed?'，失败 '+failed+' 张：'+lastError:''));
     }catch(e){say(!runtimeAvailable()||/Extension context invalidated/i.test(e.message)?refreshHint:'保存失败：'+e.message);}finally{busy=false;}
   },true);
 })();
